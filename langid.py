@@ -61,7 +61,7 @@ model_loaded = False
 _full_model = None
 
 with open("model.bz2", "rb") as fp:
-	model = base64.b64encode(fp.read())
+  model = base64.b64encode(fp.read())
 
 
 def tokenize(text, arr):
