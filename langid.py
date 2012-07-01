@@ -70,6 +70,9 @@ logfac = np.frompyfunc(logfac, 1, 1)
 
 class Identifier(object):
   def __init__(self, model=None):
+    """
+    Create a language identifier with a given language model.
+    """
     if model:
       self.model = self.unpack(model)
     else:
