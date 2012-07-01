@@ -32,10 +32,6 @@ authors and should not be interpreted as representing official policies, either 
 or implied, of the copyright holder.
 """
 
-NORM_PROBS = True # Normalize optput probabilities.
-# NORM_PROBS can be set to False for a small speed increase. It does not
-# affect the relative ordering of the predicted classes. 
-
 import itertools
 import array
 import base64
@@ -69,9 +65,10 @@ logfac = np.frompyfunc(logfac, 1, 1)
 
 
 class Identifier(object):
-  def __init__(self, model=None):
+  def __init__(self, model=None, norm_probs=True):
     """
-    Create a language identifier with a given language model.
+    Create a language identifier with a given language model, optionally
+    normalizing probabilities so that they fall within [0, 1].
     """
     if model:
       self.model = self.unpack(model)
@@ -79,6 +76,7 @@ class Identifier(object):
       self.model = self.unpack(_default_model)
 
     self.__full_model = None
+    self._norm_probs = norm_probs
 
   def tokenize(self, text, arr):
     """
@@ -151,17 +149,16 @@ class Identifier(object):
       pd = pdc + self.nb_pc
       return pd
 
-    if NORM_PROBS:
-      def norm_probs(self, pd):
-        """
-        Renormalize log-probs into a proper distribution (sum 1)
-        The technique for dealing with underflow is described in
-        http://jblevins.org/log/log-sum-exp
-        """
+    def norm_probs(self, pd):
+      """
+      Renormalize log-probs into a proper distribution (sum 1)
+      The technique for dealing with underflow is described in
+      http://jblevins.org/log/log-sum-exp
+      """
+      if self._norm_probs:
         pd = (1/np.exp(pd[None,:] - pd[:,None]).sum(1))
         return pd
-    else:
-      def norm_probs(self, pd):
+      else:
         return pd
 
   else: # if __USE_NUMPY__:
