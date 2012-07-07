@@ -94,7 +94,6 @@ class Identifier(object):
 
     return arr
 
-  logger.debug('using numpy implementation')
   def unpack(self, data):
     """
     Unpack a model that has been compressed into a string
