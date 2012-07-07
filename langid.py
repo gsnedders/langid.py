@@ -43,12 +43,7 @@ from math import log
 from cPickle import loads, dumps
 from collections import defaultdict
 
-__USE_NUMPY__ = False
-try:
-  import numpy as np
-  __USE_NUMPY__ = True
-except ImportError:
-  pass
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -99,73 +94,66 @@ class Identifier(object):
 
     return arr
 
-  if __USE_NUMPY__:
-    logger.debug('using numpy implementation')
-    def unpack(self, data):
-      """
-      Unpack a model that has been compressed into a string
-      NOTE: nb_ptc and nb_pc are array.array('f') instances.
-            nb_ptc is packed into a 1-dimensional array, each term is represented by
-            len(nb_pc) continuous entries
-      """
-      model = loads(bz2.decompress(base64.b64decode(data)))
-      self.nb_ptc, self.nb_pc, self.nb_classes, self.tk_nextmove, self.tk_output = model
-      self.nb_numfeats = len(self.nb_ptc) / len(self.nb_pc)
+  logger.debug('using numpy implementation')
+  def unpack(self, data):
+    """
+    Unpack a model that has been compressed into a string
+    NOTE: nb_ptc and nb_pc are array.array('f') instances.
+          nb_ptc is packed into a 1-dimensional array, each term is represented by
+          len(nb_pc) continuous entries
+    """
+    model = loads(bz2.decompress(base64.b64decode(data)))
+    self.nb_ptc, self.nb_pc, self.nb_classes, self.tk_nextmove, self.tk_output = model
+    self.nb_numfeats = len(self.nb_ptc) / len(self.nb_pc)
 
-      # reconstruct pc and ptc
-      self.nb_pc = np.array(self.nb_pc)
-      self.nb_ptc = np.array(self.nb_ptc).reshape(len(self.nb_ptc)/len(self.nb_pc), len(self.nb_pc))
+    # reconstruct pc and ptc
+    self.nb_pc = np.array(self.nb_pc)
+    self.nb_ptc = np.array(self.nb_ptc).reshape(len(self.nb_ptc)/len(self.nb_pc), len(self.nb_pc))
 
-    def set_languages(self, langs):
-      logger.debug("restricting languages to: %s", langs)
+  def set_languages(self, langs):
+    logger.debug("restricting languages to: %s", langs)
 
-      # Maintain a reference to the full model, in case we change our language set
-      # multiple times.
-      if self.__full_model is None:
-        self.__full_model = self.nb_ptc, self.nb_pc, self.nb_numfeats, self.nb_classes
-      else:
-        self.nb_ptc, self.nb_pc, self.nb_numfeats, self.nb_classes = self.__full_model
+    # Maintain a reference to the full model, in case we change our language set
+    # multiple times.
+    if self.__full_model is None:
+      self.__full_model = self.nb_ptc, self.nb_pc, self.nb_numfeats, self.nb_classes
+    else:
+      self.nb_ptc, self.nb_pc, self.nb_numfeats, self.nb_classes = self.__full_model
 
-      # We were passed a restricted set of languages. Trim the arrays accordingly
-      # to speed up processing.
-      for lang in langs:
-        if lang not in nb_classes:
-          raise ValueError, "Unknown language code %s" % lang
+    # We were passed a restricted set of languages. Trim the arrays accordingly
+    # to speed up processing.
+    for lang in langs:
+      if lang not in nb_classes:
+        raise ValueError, "Unknown language code %s" % lang
 
-      subset_mask = np.fromiter((l in langs for l in self.nb_classes), dtype=bool)
-      self.nb_classes = [ c for c in self.nb_classes if c in langs ]
-      self.nb_ptc = self.nb_ptc[:,subset_mask]
-      self.nb_pc = self.nb_pc[subset_mask]
+    subset_mask = np.fromiter((l in langs for l in self.nb_classes), dtype=bool)
+    self.nb_classes = [ c for c in self.nb_classes if c in langs ]
+    self.nb_ptc = self.nb_ptc[:,subset_mask]
+    self.nb_pc = self.nb_pc[subset_mask]
 
-    def argmax(self, x):
-      return np.argmax(x)
+  def argmax(self, x):
+    return np.argmax(x)
 
-    def nb_classprobs(self, fv):
-      # compute the log-factorial of each element of the vector
-      logfv = logfac(fv).astype(float)
-      # compute the probability of the document given each class
-      pdc = np.dot(fv,self.nb_ptc) - logfv.sum()
-      # compute the probability of the document in each class
-      pd = pdc + self.nb_pc
+  def nb_classprobs(self, fv):
+    # compute the log-factorial of each element of the vector
+    logfv = logfac(fv).astype(float)
+    # compute the probability of the document given each class
+    pdc = np.dot(fv,self.nb_ptc) - logfv.sum()
+    # compute the probability of the document in each class
+    pd = pdc + self.nb_pc
+    return pd
+
+  def norm_probs(self, pd):
+    """
+    Renormalize log-probs into a proper distribution (sum 1)
+    The technique for dealing with underflow is described in
+    http://jblevins.org/log/log-sum-exp
+    """
+    if self._norm_probs:
+      pd = (1/np.exp(pd[None,:] - pd[:,None]).sum(1))
       return pd
-
-    def norm_probs(self, pd):
-      """
-      Renormalize log-probs into a proper distribution (sum 1)
-      The technique for dealing with underflow is described in
-      http://jblevins.org/log/log-sum-exp
-      """
-      if self._norm_probs:
-        pd = (1/np.exp(pd[None,:] - pd[:,None]).sum(1))
-        return pd
-      else:
-        return pd
-
-  else: # if __USE_NUMPY__:
-    # This is a stub for a potential future numpy-less implementation.
-    # I will not implement this unless there is a clear demand for it.
-    raise NotImplementedError, "langid.py needs numpy to run - please contact the author if you need to use langid.py without numpy"
-    logger.debug('using python native implementation')
+    else:
+      return pd
 
   def instance2fv(self, instance):
     """
@@ -174,12 +162,8 @@ class Identifier(object):
     if isinstance(instance, unicode):
       instance = instance.encode('utf8')
 
-    if __USE_NUMPY__:
-      fv = self.tokenize(instance, 
-                         np.zeros((self.nb_numfeats,), dtype='uint32'))
-    else:
-      fv = self.tokenize(instance,
-                         array.array('L', itertootls.repeat(0, self.nb_numfeats)))
+    fv = self.tokenize(instance, 
+                       np.zeros((self.nb_numfeats,), dtype='uint32'))
     return fv
 
   def classify(self, instance):
