@@ -39,39 +39,98 @@ import bz2
 import json
 import optparse
 import logging
-from math import log
-from cPickle import loads, dumps
+import weakref
+import sys
+from math import log, pi, lgamma
+from cPickle import loads
 from collections import defaultdict
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
 
-with open("model.bz2", "rb") as fp:
-  _default_model = base64.b64encode(fp.read())
+__all__ = ["Identifier"]
 
 
-__logfac = {}
+_default_model = weakref.WeakValueDictionary()
+
+
+class WeakRefableList(list):
+  pass
+
+
+class WeakRefableDict(dict):
+  pass
+
+
+_fv_dtype = "uint%u" % (log(sys.maxsize + 1, 2) + 1)
+
+
+lgamma_ufunc = np.frompyfunc(lgamma, 1, 1)
 def logfac(a):
-  if a not in __logfac:
-    __logfac[a] = np.sum(np.log(np.arange(1,a+1)))
-  return __logfac[a]
-logfac = np.frompyfunc(logfac, 1, 1)
+  return lgamma_ufunc(a + 1)
 
 
 class Identifier(object):
-  def __init__(self, model=None, norm_probs=True):
+  def __init__(self, model=None, languages=None, norm_probs=True):
     """
     Create a language identifier with a given language model, optionally
     normalizing probabilities so that they fall within [0, 1].
     """
-    if model:
-      self.model = self.unpack(model)
-    else:
-      self.model = self.unpack(_default_model)
-
-    self.__full_model = None
     self._norm_probs = norm_probs
+
+    if not model:
+      try:
+        self.nb_ptc = _default_model["nb_ptc"]
+        self.nb_pc = _default_model["nb_pc"]
+        self.nb_classes = _default_model["nb_classes"]
+        self.tk_nextmove = _default_model["tk_nextmove"]
+        self.tk_output = _default_model["tk_output"]
+        self.nb_numfeats = len(self.nb_ptc) / len(self.nb_pc)
+      except KeyError:
+        with bz2.BZ2File("model.bz2", "rb") as fp:
+          self._unpack(fp)
+        _default_model["nb_ptc"] = self.nb_ptc
+        _default_model["nb_pc"] = self.nb_pc
+        _default_model["nb_classes"] = self.nb_classes
+        _default_model["tk_nextmove"] = self.tk_nextmove
+        _default_model["tk_output"] = self.tk_output
+    else:
+      self._unpack(model)
+
+    if languages:
+      self._set_languages(languages)
+
+  def _unpack(self, fp):
+    """
+    Unpack a model that has been compressed into a file
+    NOTE: nb_ptc and nb_pc are array.array('f') instances.
+          nb_ptc is packed into a 1-dimensional array, each term is represented by
+          len(nb_pc) continuous entries
+    """
+    # Reading the whole file into memory and calling loads is far quicker. Go figure.
+    model = loads(fp.read())
+    self.nb_ptc, self.nb_pc, self.nb_classes, self.tk_nextmove, self.tk_output = model
+    self.nb_numfeats = len(self.nb_ptc) / len(self.nb_pc)
+
+    # reconstruct pc and ptc
+    self.nb_pc = np.array(self.nb_pc)
+    self.nb_ptc = np.array(self.nb_ptc).reshape(len(self.nb_ptc)/len(self.nb_pc), len(self.nb_pc))
+
+    # Make sure everything can be weakref'd
+    self.nb_classes = WeakRefableList(self.nb_classes)
+    self.tk_output = WeakRefableDict(self.tk_output)
+
+  def _set_languages(self, langs):
+    # We were passed a restricted set of languages. Trim the arrays accordingly
+    # to speed up processing.
+    for lang in langs:
+      if lang not in nb_classes:
+        raise ValueError, "Unknown language code %s" % lang
+
+    subset_mask = np.fromiter((l in langs for l in self.nb_classes), dtype=bool)
+    self.nb_classes = [ c for c in self.nb_classes if c in langs ]
+    self.nb_ptc = self.nb_ptc[:,subset_mask]
+    self.nb_pc = self.nb_pc[subset_mask]
 
   def tokenize(self, text, arr):
     """
@@ -93,45 +152,6 @@ class Identifier(object):
         arr[index] += statecount[state]
 
     return arr
-
-  def unpack(self, data):
-    """
-    Unpack a model that has been compressed into a string
-    NOTE: nb_ptc and nb_pc are array.array('f') instances.
-          nb_ptc is packed into a 1-dimensional array, each term is represented by
-          len(nb_pc) continuous entries
-    """
-    model = loads(bz2.decompress(base64.b64decode(data)))
-    self.nb_ptc, self.nb_pc, self.nb_classes, self.tk_nextmove, self.tk_output = model
-    self.nb_numfeats = len(self.nb_ptc) / len(self.nb_pc)
-
-    # reconstruct pc and ptc
-    self.nb_pc = np.array(self.nb_pc)
-    self.nb_ptc = np.array(self.nb_ptc).reshape(len(self.nb_ptc)/len(self.nb_pc), len(self.nb_pc))
-
-  def set_languages(self, langs):
-    logger.debug("restricting languages to: %s", langs)
-
-    # Maintain a reference to the full model, in case we change our language set
-    # multiple times.
-    if self.__full_model is None:
-      self.__full_model = self.nb_ptc, self.nb_pc, self.nb_numfeats, self.nb_classes
-    else:
-      self.nb_ptc, self.nb_pc, self.nb_numfeats, self.nb_classes = self.__full_model
-
-    # We were passed a restricted set of languages. Trim the arrays accordingly
-    # to speed up processing.
-    for lang in langs:
-      if lang not in nb_classes:
-        raise ValueError, "Unknown language code %s" % lang
-
-    subset_mask = np.fromiter((l in langs for l in self.nb_classes), dtype=bool)
-    self.nb_classes = [ c for c in self.nb_classes if c in langs ]
-    self.nb_ptc = self.nb_ptc[:,subset_mask]
-    self.nb_pc = self.nb_pc[subset_mask]
-
-  def argmax(self, x):
-    return np.argmax(x)
 
   def nb_classprobs(self, fv):
     # compute the log-factorial of each element of the vector
@@ -162,7 +182,7 @@ class Identifier(object):
       instance = instance.encode('utf8')
 
     fv = self.tokenize(instance, 
-                       np.zeros((self.nb_numfeats,), dtype='uint32'))
+                       np.zeros((self.nb_numfeats,), dtype=_fv_dtype))
     return fv
 
   def classify(self, instance):
@@ -171,7 +191,7 @@ class Identifier(object):
     """
     fv = self.instance2fv(instance)
     probs = self.norm_probs(self.nb_classprobs(fv))
-    cl = self.argmax(probs)
+    cl = np.argmax(probs)
     conf = probs[cl]
     pred = self.nb_classes[cl]
     return pred, conf
@@ -220,6 +240,7 @@ if __name__ == "__main__":
         print ">>>",
         text = raw_input()
       except Exception:
+        print
         break
       print identifier.classify(text)
   else:
